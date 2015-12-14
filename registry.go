@@ -33,7 +33,7 @@ type playerSel struct {
 type seeker struct {
 	id   playerID
 	name string
-	ch   chan candidate
+	ch   chan []candidate
 }
 
 type registry struct {
@@ -58,6 +58,7 @@ func handleConnection(reg *registry) func(http.ResponseWriter, *http.Request) {
 			log.Print(err)
 			return
 		}
+		defer c.Close()
 		reg.handleClient(c)
 	}
 }
@@ -66,7 +67,13 @@ func (s *seeker) notify(c *candidate) (ok bool) {
 	defer func() {
 		ok = recover() == nil
 	}()
-	s.ch <- *c
+	select {
+	case s.ch <- []candidate{*c}:
+	case l := <-s.ch:
+		s.ch <- append(l, *c)
+	default:
+		ok = false
+	}
 	return
 }
 
@@ -174,7 +181,7 @@ type clientMsg struct {
 	ID        playerID
 	Name      string
 	Index     *uint
-	Timestamp timestamp
+	Timestamp uint64
 	Symbol    gesture
 	err       error
 }
@@ -186,6 +193,7 @@ type client struct {
 	msgCh        chan *clientMsg
 	reg          *registry
 	timeout      time.Duration
+	pingInterval time.Duration
 	writeTimeout time.Duration
 }
 
@@ -213,7 +221,7 @@ func (cl *client) readLoop() {
 
 func (r *registry) handleClient(c *websocket.Conn) {
 	// const writeTimeout = time.Second * 10
-	const timeout = time.Second * 30
+	const timeout = time.Second * 3
 	const pingInterval = timeout * 2 / 3
 
 	cl := client{
@@ -222,14 +230,18 @@ func (r *registry) handleClient(c *websocket.Conn) {
 		msgCh:        make(chan *clientMsg, 1),
 		reg:          r,
 		timeout:      timeout,
-		writeTimeout: (timeout - pingInterval) / 2,
+		pingInterval: pingInterval,
+		writeTimeout: (timeout - pingInterval + 1) / 2,
 	}
 
 	log.Printf("new client: %v", c.RemoteAddr())
 
 	defer close(cl.msgCh)
 
-	cl.register()
+	err := cl.register()
+	if err != nil {
+		log.Printf("error: %v", err)
+	}
 
 	log.Printf("disconnect client: %v", c.RemoteAddr())
 }
@@ -249,7 +261,7 @@ func (cl *client) register() error {
 	var m struct {
 		ID        playerID
 		Name      string
-		Timestamp *timestamp
+		Timestamp *uint64
 	}
 	cl.conn.SetReadDeadline(time.Now().Add(cl.timeout))
 	err := cl.conn.ReadJSON(&m)
@@ -267,12 +279,14 @@ func (cl *client) register() error {
 	s := &seeker{
 		id:   m.ID,
 		name: m.Name,
-		ch:   make(chan candidate, 1),
+		ch:   make(chan []candidate, 1),
 	}
+
+	log.Printf("new player: %s (%s)", m.Name, m.ID)
 
 	sel := playerSel{
 		id:        m.ID,
-		timestamp: *m.Timestamp,
+		timestamp: timestamp(*m.Timestamp),
 		ch:        make(chan interface{}, 1),
 		add:       true,
 	}
@@ -282,6 +296,7 @@ func (cl *client) register() error {
 	defer func() {
 		sel.add = false
 		cl.reg.ch <- sel
+		close(s.ch)
 	}()
 
 	// TODO: find better deadline
@@ -292,6 +307,7 @@ func (cl *client) register() error {
 		return err
 	}
 
+	log.Printf("sending %d candidates", len(others))
 	for _, o := range others {
 		err = cl.writeCandidate(o)
 		if err != nil {
@@ -299,23 +315,29 @@ func (cl *client) register() error {
 		}
 	}
 
+	log.Printf("waiting for selection")
+
 	return cl.seek(others, s.ch, &sel)
 }
 
-func (cl *client) seek(others map[uint]candidate, ch chan candidate, sel *playerSel) error {
+func (cl *client) seek(others map[uint]candidate, ch chan []candidate, sel *playerSel) error {
 	go cl.readLoop()
 
 	var werr error
 loop:
 	for werr == nil {
-		cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 		select {
 		case _ = <-cl.pingTimer.C:
+			cl.pingTimer.Reset(cl.pingInterval)
+			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 			werr = cl.conn.WriteMessage(websocket.PingMessage, []byte{})
-		case o, ok := <-ch:
+		case ol, ok := <-ch:
 			if ok {
-				werr = cl.writeCandidate(o)
-				others[o.index] = o
+				for _, o := range ol {
+					cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
+					werr = cl.writeCandidate(o)
+					others[o.index] = o
+				}
 			} else {
 				werr = fmt.Errorf("player not available")
 				break loop
@@ -325,15 +347,16 @@ loop:
 				werr = fmt.Errorf("error reading client message: %v", m.err)
 				break loop
 			}
+			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 			if m.Index != nil {
 				o, exists := others[*m.Index]
 				if exists {
 					sel.selID = o.playerID
 					cl.reg.ch <- *sel
 				} else {
-					errstr := fmt.Sprintf("invalid selection: %v", m)
+					errstr := fmt.Sprintf("invalid selection: %d", *m.Index)
 					cl.conn.WriteJSON(errorResp{errstr})
-					werr = fmt.Errorf("errstr")
+					werr = fmt.Errorf(errstr)
 				}
 				break loop
 			} else {
@@ -379,5 +402,19 @@ func (cl *client) waitForOtherPlayer(ch chan interface{}) error {
 }
 
 func (cl *client) play(ch chan move) error {
+	const maxMoveWait = time.Minute * 3
+	select {
+	case _ = <-time.After(maxMoveWait):
+		err = fmt.Errorf("exceeded timeout while waiting for move")
+		cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
+		cl.conn.WriteJSON(errorResp{err.Error()})
+	case m, ok := <-cl.msgCh:
+		ch <- move{
+			id:        cl.playerID,
+			gesture:   m.Symbol,
+			timestamp: m.Timestamp,
+		}
+	}
+
 	return nil
 }

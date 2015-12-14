@@ -31,5 +31,6 @@ func main() {
 	reg := newRegistry()
 	go reg.run()
 	http.HandleFunc(url, handleConnection(reg))
+	http.Handle("/client/", http.StripPrefix("/client/", http.FileServer(http.Dir("web"))))
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
