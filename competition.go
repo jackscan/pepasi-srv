@@ -80,33 +80,3 @@ func startCompetition(a, b player, dt timestamp) {
 		log.Printf("competition (%s, %s) closed", a.id, b.id)
 	}()
 }
-
-// func newCompetition(a, b *player, dt timestamp) *competition {
-// 	return &competition{
-// 		a:  a,
-// 		b:  b,
-// 		dt: dt,
-// 		ch: make(chan move, 2),
-// 	}
-// }
-//
-// type startMsg struct {
-// 	ch chan move
-// }
-//
-// func (c *competition) run() {
-// 	m := startMsg{c.ch}
-// 	c.a.ch <- &m
-// 	c.b.ch <- &m
-//
-// 	for {
-// 		move, ok := <-c.ch
-// 		todo
-// 	}
-// }
-//
-// func (c *competition) close() {
-// 	closeMsg := errorResp{"competition closed"}
-// 	c.a.ch <- &closeMsg
-// 	c.b.ch <- &closeMsg
-// }

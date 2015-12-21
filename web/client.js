@@ -10,9 +10,11 @@
     }(document.getElementById("log"));
 
     var send = function(msg) {
-        var str = JSON.stringify(msg);
-        log("send " + str);
-        ws.send(str);
+        if (ws) {
+            var str = JSON.stringify(msg);
+            log("send " + str);
+            ws.send(str);
+        }
     }
 
     var clist = document.getElementById("candidates");
@@ -23,6 +25,14 @@
             send({"Index": +clist.options[i].value});
         }
     };
+
+    document.getElementById("disconnect").onclick = function() {
+        if (ws != null) {
+            log("disconnect")
+            ws.close();
+            ws = null;
+        }
+    }
 
     document.getElementById("join").onclick = function() {
         if (ws != null) {
@@ -69,9 +79,13 @@
 
     var movebtns = document.getElementById("moves").getElementsByTagName("button")
     for (var i = 0; i < movebtns.length; ++i) {
-        movebtns[i].onclick = function() {
-            log("button: " + this.name);
-        };
+        (function (sym) {
+            movebtns[i].onclick = function() {
+                log("button: " + this.name);
+                var token = document.getElementById("token").value;
+                send({Timestamp: Date.now(), Symbol: sym});
+            };
+        })(i+1);
     }
 
 }).call(this);
