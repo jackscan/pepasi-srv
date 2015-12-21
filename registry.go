@@ -388,33 +388,50 @@ func (cl *client) waitForOtherPlayer(ch chan interface{}) error {
 			err = fmt.Errorf("player not available")
 			cl.conn.WriteJSON(errorResp{err.Error()})
 		} else {
-			cl.conn.WriteJSON(struct{ Start int }{1})
+			cl.conn.WriteJSON(struct{ Play int }{1})
 			moveCh = s.(chan move)
 		}
 		break
 	}
 
 	if moveCh != nil {
-		return cl.play(moveCh)
+		return cl.play(moveCh, ch)
 	}
 
 	return err
 }
 
-func (cl *client) play(ch chan move) error {
-	const maxMoveWait = time.Minute * 3
-	select {
-	case _ = <-time.After(maxMoveWait):
-		err = fmt.Errorf("exceeded timeout while waiting for move")
-		cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
-		cl.conn.WriteJSON(errorResp{err.Error()})
-	case m, ok := <-cl.msgCh:
-		ch <- move{
-			id:        cl.playerID,
-			gesture:   m.Symbol,
-			timestamp: m.Timestamp,
+func (cl *client) play(moveCh chan move, resultCh chan interface{}) error {
+	const maxIdle = time.Minute * 3
+	var err error
+loop:
+	for err == nil {
+		select {
+		case _ = <-cl.pingTimer.C:
+			cl.pingTimer.Reset(cl.pingInterval)
+			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
+			err = cl.conn.WriteMessage(websocket.PingMessage, []byte{})
+		case _ = <-time.After(maxIdle):
+			err = fmt.Errorf("disconnecting idle player")
+			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
+			cl.conn.WriteJSON(errorResp{err.Error()})
+		case m := <-cl.msgCh:
+			moveCh <- move{
+				id:        cl.playerID,
+				gesture:   m.Symbol,
+				timestamp: timestamp(m.Timestamp),
+			}
+		case r, ok := <-resultCh:
+			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
+			if ok {
+				cl.conn.WriteJSON(struct{ Result int }{r.(int)})
+			} else {
+				// send end message
+				cl.conn.WriteJSON(struct{ Play int }{0})
+				break loop
+			}
 		}
 	}
 
-	return nil
+	return err
 }

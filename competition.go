@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"log"
+)
 
 type timestamp int32
 type result int
@@ -11,6 +14,7 @@ const (
 	rockGesture
 	paperGesture
 	scissorGesture
+	leaveGesture
 )
 
 type player struct {
@@ -38,11 +42,13 @@ func startCompetition(a, b player, dt timestamp) {
 
 	go func() {
 		var ma, mb move
+		defer close(a.ch)
+		defer close(b.ch)
 	loop:
 		for {
 			select {
 			case m, ok := <-ch:
-				if !ok {
+				if !ok || m.gesture == leaveGesture {
 					break loop
 				}
 				if m.id == a.id {
@@ -67,8 +73,11 @@ func startCompetition(a, b player, dt timestamp) {
 				default:
 					panic(fmt.Errorf("unexpected moves: %v, %v", ma, mb))
 				}
+				ma.gesture = noGesture
+				mb.gesture = noGesture
 			}
 		}
+		log.Printf("competition (%s, %s) closed", a.id, b.id)
 	}()
 }
 
