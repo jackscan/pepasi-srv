@@ -332,9 +332,13 @@ func (cl *client) register() error {
 		}
 	}
 
-	log.Printf("waiting for selection")
+	err = cl.seek(others, s.ch, &sel)
 
-	return cl.seek(others, s.ch, &sel)
+	if err == nil && len(sel.selID) > 0 {
+		err = cl.waitForOtherPlayer(sel.ch)
+	}
+
+	return err
 }
 
 func (cl *client) seek(others map[uint]candidate, ch chan []candidate, sel *playerSel) error {
@@ -389,9 +393,6 @@ loop:
 		}
 	}
 
-	if len(sel.selID) > 0 && werr == nil {
-		werr = cl.waitForOtherPlayer(sel.ch)
-	}
 	return werr
 }
 
