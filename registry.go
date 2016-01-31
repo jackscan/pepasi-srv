@@ -296,6 +296,9 @@ func (cl *client) register() error {
 	}
 
 	cl.playerID = m.ID
+	if len(m.Name) == 0 {
+		m.Name = "Player"
+	}
 
 	s := &seeker{
 		id:   m.ID,
