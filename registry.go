@@ -126,6 +126,18 @@ func (r *registry) run() {
 		ch chan interface{}
 	}
 	players := make(map[playerID][]aspirant, 2)
+
+	removePlayer := func(id playerID) {
+		log.Printf("removing player %s from registry", id)
+		// close channels to remaining aspirants
+		for _, a := range players[id] {
+			close(a.ch)
+		}
+		// inform other players
+
+		delete(players, id)
+	}
+
 loop:
 	for {
 		select {
@@ -152,6 +164,8 @@ loop:
 					if exists {
 						// add player to aspirant list of selected player
 						players[s.selID] = append(alist, aspirant{s.id, s.timestamp, s.ch})
+						// remove player from registry
+						removePlayer(s.id)
 					} else {
 						// selected player is already gone
 						close(s.ch)
@@ -171,11 +185,7 @@ loop:
 						}
 					}
 				}
-				// close channels to remaining aspirants
-				for _, a := range players[s.id] {
-					close(a.ch)
-				}
-				delete(players, s.id)
+				removePlayer(s.id)
 			}
 		}
 	}
