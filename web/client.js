@@ -71,6 +71,12 @@
                 myIndex = msg.Index;
                 setStatus("You are Player #" + myIndex);
                 log("registered as #" + msg.Index);
+            } else if (msg.Index != null) {
+                for(var i = 0; i < clist.childNodes.length; i++)
+                    if (clist.childNodes[i].value == msg.Index) {
+                        clist.removeChild(clist.childNodes[i]);
+                        break;
+                    }
             }
 
             if (msg.Error){
