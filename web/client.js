@@ -9,6 +9,12 @@
         }
     }(document.getElementById("log"));
 
+    var setStatus = function(status) {
+        return function(s) {
+            status.innerHTML = s;
+        }
+    }(document.getElementById("status"));
+
     var send = function(msg) {
         if (ws) {
             var str = JSON.stringify(msg);
@@ -16,7 +22,7 @@
             ws.send(str);
         }
     }
-
+    var myIndex;
     var clist = document.getElementById("candidates");
 
     clist.onchange = function() {
@@ -61,7 +67,9 @@
                 opt.appendChild(document.createTextNode("#" + msg.Index + " " + msg.Name));
                 opt.value = msg.Index;
                 clist.appendChild(opt);
-            } else if (msg.Index != null) {
+            } else if (msg.Index != null && myIndex == null) {
+                myIndex = msg.Index;
+                setStatus("You are Player #" + myIndex);
                 log("registered as #" + msg.Index);
             }
 
