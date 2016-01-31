@@ -26,6 +26,7 @@ type playerSel struct {
 	id    playerID
 	selID playerID
 	timestamp
+	// channel for player to receive moveCh and results
 	ch  chan interface{}
 	add bool
 }
@@ -129,6 +130,8 @@ loop:
 	for {
 		select {
 		case s, ok := <-r.ch:
+			// handle selection
+
 			if !ok {
 				break loop
 			}
@@ -147,6 +150,7 @@ loop:
 
 					alist, exists := players[s.selID]
 					if exists {
+						// add player to aspirant list of selected player
 						players[s.selID] = append(alist, aspirant{s.id, s.timestamp, s.ch})
 					} else {
 						// selected player is already gone
@@ -243,7 +247,7 @@ func (r *registry) handleClient(c *websocket.Conn) {
 		log.Printf("error: %v", err)
 	}
 
-	log.Printf("disconnect client: %v", c.RemoteAddr())
+	log.Printf("disconnect client %s: %v", cl.playerID, c.RemoteAddr())
 }
 
 func (cl *client) writeCandidate(c candidate) error {
@@ -291,8 +295,11 @@ func (cl *client) register() error {
 		add:       true,
 	}
 
+	// create player entry in registry.run()
 	cl.reg.ch <- sel
 	index, others := cl.reg.addSeeker(s)
+
+	// defer removal of seeking player, in case of error
 	defer func() {
 		sel.add = false
 		cl.reg.ch <- sel
@@ -324,6 +331,9 @@ func (cl *client) seek(others map[uint]candidate, ch chan []candidate, sel *play
 	go cl.readLoop()
 
 	var werr error
+
+	log.Printf("%s is selecting", cl.playerID)
+
 loop:
 	for werr == nil {
 		select {
@@ -339,7 +349,10 @@ loop:
 					others[o.index] = o
 				}
 			} else {
-				werr = fmt.Errorf("player not available")
+				// XXX: channel closed by registry.run()
+				// when selected player is not available anymore?
+				// can this ever happen? We have not selected anyone yet.
+				werr = fmt.Errorf("player not available anymore")
 				break loop
 			}
 		case m, ok := <-cl.msgCh:
@@ -377,6 +390,8 @@ func (cl *client) waitForOtherPlayer(ch chan interface{}) error {
 	var moveCh chan move
 	var err error
 
+	log.Printf("%s waits for other player", cl.playerID)
+
 	select {
 	case _ = <-time.After(maxSelectionWait):
 		err = fmt.Errorf("exceeded timeout while waiting for other player")
@@ -404,6 +419,9 @@ func (cl *client) waitForOtherPlayer(ch chan interface{}) error {
 func (cl *client) play(moveCh chan move, resultCh chan interface{}) error {
 	const maxIdle = time.Minute * 3
 	var err error
+
+	log.Printf("%s is playing", cl.playerID)
+
 loop:
 	for err == nil {
 		select {
@@ -424,9 +442,11 @@ loop:
 		case r, ok := <-resultCh:
 			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 			if ok {
+				log.Printf("%s got %d", cl.playerID, r.(int))
 				cl.conn.WriteJSON(struct{ Result int }{r.(int)})
 			} else {
 				// send end message
+				log.Printf("%s end", cl.playerID)
 				cl.conn.WriteJSON(struct{ Play int }{0})
 				break loop
 			}
