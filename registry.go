@@ -261,12 +261,19 @@ func (r *registry) handleClient(c *websocket.Conn) {
 }
 
 func (cl *client) writeCandidate(c candidate) error {
+	if len(c.name) > 0 {
+		return cl.conn.WriteJSON(struct {
+			Index uint
+			Name  string
+		}{
+			Index: c.index,
+			Name:  c.name,
+		})
+	}
 	return cl.conn.WriteJSON(struct {
 		Index uint
-		Name  string
 	}{
 		Index: c.index,
-		Name:  c.name,
 	})
 }
 
