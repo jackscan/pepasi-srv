@@ -360,7 +360,11 @@ loop:
 				for _, o := range ol {
 					cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 					werr = cl.writeCandidate(o)
-					others[o.index] = o
+					if len(o.playerID) > 0 {
+						others[o.index] = o
+					} else {
+						delete(others, o.index)
+					}
 				}
 			} else {
 				// XXX: channel closed by registry.run()
