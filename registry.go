@@ -181,7 +181,7 @@ type clientMsg struct {
 	ID        playerID
 	Name      string
 	Index     *uint
-	Timestamp uint64
+	Timestamp int64
 	Symbol    gesture
 	err       error
 }
@@ -261,7 +261,7 @@ func (cl *client) register() error {
 	var m struct {
 		ID        playerID
 		Name      string
-		Timestamp *uint64
+		Timestamp *int64
 	}
 	cl.conn.SetReadDeadline(time.Now().Add(cl.timeout))
 	err := cl.conn.ReadJSON(&m)
