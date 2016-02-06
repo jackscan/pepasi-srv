@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/gorilla/websocket"
 )
@@ -22,33 +23,27 @@ type errorResp struct {
 	Error string
 }
 
-type playerSel struct {
+type seeker struct {
 	id    playerID
+	name  string
+	index int
 	selID playerID
 	timestamp
 	// channel for player to receive moveCh and results
-	ch  chan interface{}
-	add bool
-}
-
-type seeker struct {
-	id   playerID
-	name string
-	ch   chan []candidate
+	resultCh    chan interface{}
+	candidateCh chan []candidate
+	aspirants   []playerID
+	add         bool
 }
 
 type registry struct {
-	// query      chan interface{}
-	// player     map[playerID]*player
-	mutex  sync.RWMutex
-	seeker []*seeker
-	ch     chan playerSel
+	mutex   sync.RWMutex
+	seeker  map[playerID]*seeker
+	exposed []*seeker
 }
 
 func newRegistry() *registry {
-	return &registry{
-		ch: make(chan playerSel, 1),
-	}
+	return &registry{seeker: make(map[playerID]*seeker, 2)}
 }
 
 func handleConnection(reg *registry) func(http.ResponseWriter, *http.Request) {
@@ -64,131 +59,168 @@ func handleConnection(reg *registry) func(http.ResponseWriter, *http.Request) {
 	}
 }
 
-func (s *seeker) notify(c *candidate) (ok bool) {
-	defer func() {
-		ok = recover() == nil
-	}()
+func (s *seeker) notify(c *candidate) {
 	select {
-	case s.ch <- []candidate{*c}:
-	case l := <-s.ch:
-		s.ch <- append(l, *c)
+	case s.candidateCh <- []candidate{*c}:
+	case l := <-s.candidateCh:
+		s.candidateCh <- append(l, *c)
 	default:
-		ok = false
+		log.WithFields(log.Fields{
+			"player":    s.id,
+			"name":      s.name,
+			"candidate": c.playerID,
+			"index":     s.index,
+			"cname":     c.name,
+		}).Fatal("missed candidate")
 	}
-	return
 }
 
-func (r *registry) addSeeker(s *seeker) (uint, map[uint]candidate) {
+func (r *registry) removeExposedLocked(s *seeker) {
+	if s.index >= 0 {
+		// notify others
+		c := candidate{index: uint(s.index)}
+		for _, o := range r.exposed {
+			if o != nil && s.selID != o.id {
+				o.notify(&c)
+			}
+		}
+		r.exposed[s.index] = nil
+		s.index = -1
+		close(s.candidateCh)
+	}
+}
+
+func (r *registry) removeSeekerLocked(s *seeker) {
+	// close all other aspirants
+	for _, a := range s.aspirants {
+		if s.selID != a {
+			o := r.seeker[a]
+			if o != nil && o.resultCh != nil {
+				close(o.resultCh)
+				o.resultCh = nil
+			}
+		}
+	}
+
+	// unset selection to remove from all clients
+	s.selID = ""
+	r.removeExposedLocked(s)
+	if s.resultCh != nil {
+		close(s.resultCh)
+		s.resultCh = nil
+	}
+	delete(r.seeker, s.id)
+}
+
+func (r *registry) removeSeeker(s *seeker) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.removeSeekerLocked(s)
+}
+
+func (r *registry) addSeeker(id playerID, name string) *seeker {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
+	rlog := log.WithFields(log.Fields{
+		"player": id,
+		"name":   name,
+	})
+
+	if os, exists := r.seeker[id]; exists {
+		rlog.Warn("remove old seeker")
+		r.removeSeekerLocked(os)
+	}
+
 	index := -1
 	// reserve for current seekers and coming
-	others := make(map[uint]candidate, len(r.seeker)*2+1)
+	others := make([]candidate, 0, len(r.seeker)*2+1)
 
-	for i, o := range r.seeker {
-		if o != nil {
-			others[uint(i)] = candidate{
-				index:    uint(i),
-				name:     o.name,
-				playerID: o.id,
-			}
-		} else if index < 0 {
-			r.seeker[i] = s
+	// find free index
+	for i, o := range r.exposed {
+		if o == nil {
 			index = i
+			break
 		}
 	}
+
+	// no free index found?
 	if index < 0 {
-		index = len(r.seeker)
-		r.seeker = append(r.seeker, s)
+		// append
+		index = len(r.exposed)
+		r.exposed = append(r.exposed, nil)
 	}
+
+	rlog.WithField("index", index).Info("registered")
 
 	nc := candidate{
 		index:    uint(index),
-		name:     s.name,
-		playerID: s.id,
+		name:     name,
+		playerID: id,
 	}
 
-	for i, o := range r.seeker {
-		if o != s && !o.notify(&nc) {
-			// remove abandoned seeker
-			r.seeker[i] = nil
+	// notify others
+	for i, o := range r.exposed {
+		if o != nil {
+			o.notify(&nc)
+			others = append(others, candidate{
+				index:    uint(i),
+				name:     o.name,
+				playerID: o.id,
+			})
 		}
 	}
 
-	return uint(index), others
+	s := &seeker{
+		id:          id,
+		name:        name,
+		index:       index,
+		candidateCh: make(chan []candidate, 1),
+		resultCh:    make(chan interface{}, 1),
+	}
+
+	r.seeker[id] = s
+	r.exposed[index] = s
+
+	s.candidateCh <- others
+
+	return s
 }
 
-func (r *registry) run() {
-	type aspirant struct {
-		playerID
-		timestamp
-		ch chan interface{}
+func (r *registry) seekerSelect(s *seeker, id playerID) bool {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	rlog := log.WithFields(log.Fields{
+		"player": s.id,
+		"name":   s.name,
+	})
+
+	rlog.WithField("selection", id).Info("selected")
+
+	o := r.seeker[id]
+
+	if o == nil {
+		// selected player is already gone
+		return false
 	}
-	players := make(map[playerID][]aspirant, 2)
 
-	removePlayer := func(id playerID) {
-		log.Printf("removing player %s from registry", id)
-		// close channels to remaining aspirants
-		for _, a := range players[id] {
-			close(a.ch)
-		}
-		// inform other players
+	s.selID = id
 
-		delete(players, id)
-	}
-
-loop:
-	for {
-		select {
-		case s, ok := <-r.ch:
-			// handle selection
-
-			if !ok {
-				break loop
-			}
-
-			if s.add {
-				if len(s.selID) > 0 {
-					for _, c := range players[s.id] {
-						if c.playerID == s.selID {
-							// other player is already waiting
-							a := player{c.playerID, c.ch}
-							b := player{s.id, s.ch}
-							startCompetition(a, b, s.timestamp-c.timestamp)
-							continue loop
-						}
-					}
-
-					alist, exists := players[s.selID]
-					if exists {
-						// add player to aspirant list of selected player
-						players[s.selID] = append(alist, aspirant{s.id, s.timestamp, s.ch})
-						// remove player from registry
-						removePlayer(s.id)
-					} else {
-						// selected player is already gone
-						close(s.ch)
-					}
-				} else {
-					players[s.id] = make([]aspirant, 0, 1)
-				}
-			} else {
-				if len(s.selID) > 0 {
-					// remove player from other list
-					alist := players[s.selID]
-					for i := len(alist) - 1; i >= 0; i-- {
-						if alist[i].playerID == s.id {
-							n := len(alist) - 1
-							alist[i] = alist[n]
-							alist = alist[:n]
-						}
-					}
-				}
-				removePlayer(s.id)
-			}
+	for _, oid := range r.seeker[s.id].aspirants {
+		if oid == id {
+			rlog.Info("selection matched")
+			// other player is already waiting
+			a := player{o.id, o.resultCh}
+			b := player{s.id, s.resultCh}
+			startCompetition(a, b, s.timestamp-o.timestamp)
+			return true
 		}
 	}
+
+	o.aspirants = append(o.aspirants, s.id)
+	r.removeExposedLocked(s)
+	return true
 }
 
 type clientMsg struct {
@@ -205,10 +237,13 @@ type client struct {
 	conn         *websocket.Conn
 	pingTimer    *time.Timer
 	msgCh        chan *clientMsg
+	moveCh       chan move
+	resultCh     chan interface{}
 	reg          *registry
 	timeout      time.Duration
 	pingInterval time.Duration
 	writeTimeout time.Duration
+	log          *log.Entry
 }
 
 func (cl *client) readLoop() {
@@ -246,18 +281,28 @@ func (r *registry) handleClient(c *websocket.Conn) {
 		timeout:      timeout,
 		pingInterval: pingInterval,
 		writeTimeout: (timeout - pingInterval + 1) / 2,
+		log:          log.WithFields(log.Fields{"address": c.RemoteAddr()}),
 	}
 
-	log.Printf("new client: %v", c.RemoteAddr())
+	cl.log.Info("new client")
 
-	defer close(cl.msgCh)
+	defer func() {
+		close(cl.msgCh)
+		if cl.moveCh != nil {
+			close(cl.moveCh)
+		}
+	}()
 
 	err := cl.register()
-	if err != nil {
-		log.Printf("error: %v", err)
+	if err == nil {
+		err = cl.play()
 	}
 
-	log.Printf("disconnect client %s: %v", cl.playerID, c.RemoteAddr())
+	if err != nil {
+		cl.log.WithError(err)
+	}
+
+	cl.log.Info("disconnect")
 }
 
 func (cl *client) writeCandidate(c candidate) error {
@@ -270,11 +315,7 @@ func (cl *client) writeCandidate(c candidate) error {
 			Name:  c.name,
 		})
 	}
-	return cl.conn.WriteJSON(struct {
-		Index uint
-	}{
-		Index: c.index,
-	})
+	return cl.conn.WriteJSON(struct{ Index uint }{Index: c.index})
 }
 
 func (cl *client) register() error {
@@ -300,64 +341,37 @@ func (cl *client) register() error {
 		m.Name = "Player"
 	}
 
-	s := &seeker{
-		id:   m.ID,
-		name: m.Name,
-		ch:   make(chan []candidate, 1),
-	}
+	cl.log = cl.log.WithFields(log.Fields{"player": cl.playerID, "name": m.Name})
+	cl.log.Info("registering")
+	delete(cl.log.Data, "address")
 
-	log.Printf("new player: %s (%s)", m.Name, m.ID)
-
-	sel := playerSel{
-		id:        m.ID,
-		timestamp: timestamp(*m.Timestamp),
-		ch:        make(chan interface{}, 1),
-		add:       true,
-	}
-
-	// create player entry in registry.run()
-	cl.reg.ch <- sel
-	index, others := cl.reg.addSeeker(s)
-
-	// defer removal of seeking player, in case of error
-	defer func() {
-		sel.add = false
-		cl.reg.ch <- sel
-		close(s.ch)
-	}()
+	s := cl.reg.addSeeker(m.ID, m.Name)
+	defer cl.reg.removeSeeker(s)
 
 	// TODO: find better deadline
 	cl.conn.SetWriteDeadline(time.Now().Add(cl.timeout))
 
-	err = cl.conn.WriteJSON(struct{ Index uint }{index})
+	err = cl.conn.WriteJSON(struct{ Index int }{s.index})
 	if err != nil {
 		return err
 	}
 
-	log.Printf("sending %d candidates", len(others))
-	for _, o := range others {
-		err = cl.writeCandidate(o)
-		if err != nil {
-			return err
-		}
-	}
+	err = cl.seek(s)
 
-	err = cl.seek(others, s.ch, &sel)
-
-	if err == nil && len(sel.selID) > 0 {
-		err = cl.waitForOtherPlayer(sel.ch)
+	if err == nil && len(s.selID) > 0 {
+		err = cl.waitForOtherPlayer(s)
 	}
 
 	return err
 }
 
-func (cl *client) seek(others map[uint]candidate, ch chan []candidate, sel *playerSel) error {
+func (cl *client) seek(s *seeker) error {
 	go cl.readLoop()
 
 	var werr error
 
-	log.Printf("%s is selecting", cl.playerID)
-
+	cl.log.Info("seeking")
+	others := make(map[uint]candidate)
 loop:
 	for werr == nil {
 		select {
@@ -365,7 +379,7 @@ loop:
 			cl.pingTimer.Reset(cl.pingInterval)
 			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 			werr = cl.conn.WriteMessage(websocket.PingMessage, []byte{})
-		case ol, ok := <-ch:
+		case ol, ok := <-s.candidateCh:
 			if ok {
 				for _, o := range ol {
 					cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
@@ -392,8 +406,7 @@ loop:
 			if m.Index != nil {
 				o, exists := others[*m.Index]
 				if exists {
-					sel.selID = o.playerID
-					cl.reg.ch <- *sel
+					cl.reg.seekerSelect(s, o.playerID)
 				} else {
 					errstr := fmt.Sprintf("invalid selection: %d", *m.Index)
 					cl.conn.WriteJSON(errorResp{errstr})
@@ -410,42 +423,42 @@ loop:
 	return werr
 }
 
-func (cl *client) waitForOtherPlayer(ch chan interface{}) error {
+func (cl *client) waitForOtherPlayer(s *seeker) error {
 	const maxSelectionWait = time.Second * 40
-	var moveCh chan move
 	var err error
 
-	log.Printf("%s waits for other player", cl.playerID)
+	cl.log.Info("waiting for other player")
 
 	select {
 	case _ = <-time.After(maxSelectionWait):
 		err = fmt.Errorf("exceeded timeout while waiting for other player")
 		cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 		cl.conn.WriteJSON(errorResp{err.Error()})
-	case s, ok := <-ch:
+	case ch, ok := <-s.resultCh:
 		cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 		if !ok {
 			err = fmt.Errorf("player not available")
 			cl.conn.WriteJSON(errorResp{err.Error()})
 		} else {
 			cl.conn.WriteJSON(struct{ Play int }{1})
-			moveCh = s.(chan move)
+			cl.moveCh = ch.(chan move)
+			cl.resultCh, s.resultCh = s.resultCh, nil
 		}
 		break
-	}
-
-	if moveCh != nil {
-		return cl.play(moveCh, ch)
 	}
 
 	return err
 }
 
-func (cl *client) play(moveCh chan move, resultCh chan interface{}) error {
+func (cl *client) play() error {
 	const maxIdle = time.Minute * 3
 	var err error
 
-	log.Printf("%s is playing", cl.playerID)
+	defer func() {
+		cl.moveCh <- move{gesture: leaveGesture}
+	}()
+
+	cl.log.Info("playing")
 
 loop:
 	for err == nil {
@@ -458,20 +471,28 @@ loop:
 			err = fmt.Errorf("disconnecting idle player")
 			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 			cl.conn.WriteJSON(errorResp{err.Error()})
-		case m := <-cl.msgCh:
-			moveCh <- move{
-				id:        cl.playerID,
-				gesture:   m.Symbol,
-				timestamp: timestamp(m.Timestamp),
+		case m, ok := <-cl.msgCh:
+			if ok {
+				cl.log.WithFields(log.Fields{
+					"symbol":    m.Symbol,
+					"timestamp": m.Timestamp,
+				}).Info("move")
+				cl.moveCh <- move{
+					gesture:   m.Symbol,
+					timestamp: timestamp(m.Timestamp),
+				}
+			} else {
+				cl.log.Info("connection closed?")
+				break loop
 			}
-		case r, ok := <-resultCh:
+		case r, ok := <-cl.resultCh:
 			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 			if ok {
-				log.Printf("%s got %d", cl.playerID, r.(int))
+				cl.log.WithField("result", r).Info("turn end")
 				cl.conn.WriteJSON(struct{ Result int }{r.(int)})
 			} else {
 				// send end message
-				log.Printf("%s end", cl.playerID)
+				cl.log.Info("match end")
 				cl.conn.WriteJSON(struct{ Play int }{0})
 				break loop
 			}

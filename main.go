@@ -2,8 +2,9 @@ package main
 
 import (
 	// "github.com/boltdb/bolt"
-	"log"
 	"net/http"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // func handleSync(db *bolt.DB) http.HandlerFunc {
@@ -29,7 +30,6 @@ func main() {
 	addr := ":8080"
 	url := "/pepasi"
 	reg := newRegistry()
-	go reg.run()
 	http.HandleFunc(url, handleConnection(reg))
 	http.Handle("/config/", http.StripPrefix("/config/", http.FileServer(http.Dir("config-web"))))
 	http.Handle("/client/", http.StripPrefix("/client/", http.FileServer(http.Dir("web"))))

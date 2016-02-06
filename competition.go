@@ -2,7 +2,8 @@ package main
 
 import (
 	"fmt"
-	"log"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type timestamp int32
@@ -23,7 +24,6 @@ type player struct {
 }
 
 type move struct {
-	id playerID
 	gesture
 	timestamp
 }
@@ -35,30 +35,28 @@ type move struct {
 // }
 
 func startCompetition(a, b player, dt timestamp) {
-	ch := make(chan move, 2)
+	ach := make(chan move, 1)
+	bch := make(chan move, 1)
 
-	a.ch <- ch
-	b.ch <- ch
+	a.ch <- ach
+	b.ch <- bch
 
 	go func() {
 		var ma, mb move
+		var ok bool
 		defer close(a.ch)
 		defer close(b.ch)
 	loop:
 		for {
 			select {
-			case m, ok := <-ch:
-				if !ok || m.gesture == leaveGesture {
-					break loop
-				}
-				if m.id == a.id {
-					ma = m
-				} else if m.id == b.id {
-					mb = m
-				} else {
-					panic(m)
-				}
+			case ma, ok = <-ach:
+			case mb, ok = <-bch:
 			}
+
+			if !ok || ma.gesture == leaveGesture || mb.gesture == leaveGesture {
+				break loop
+			}
+
 			if ma.gesture != noGesture && mb.gesture != noGesture {
 				switch ma.gesture - mb.gesture {
 				case 0: // draw
