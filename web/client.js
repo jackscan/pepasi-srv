@@ -84,6 +84,7 @@
             }
         };
         ws.onclose = function() {
+            myIndex = null;
             log("disconnected");
         };
         ws.onerror = function(e) {
