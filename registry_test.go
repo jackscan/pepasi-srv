@@ -1,21 +1,58 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
+func failOnError(t *testing.T, err error) {
+	if err != nil {
+		_, file, line, _ := runtime.Caller(1)
+		t.Fatalf("%v:%v: %s", file, line, err.Error())
+	}
+}
+
+func expectEqual(t *testing.T, a, b interface{}, msg string) {
+	if !reflect.DeepEqual(a, b) {
+		_, file, line, _ := runtime.Caller(1)
+		t.Errorf("%v:%v: %v != %v, %s", file, line, a, b, msg)
+	}
+}
+
+func assert(t *testing.T, v bool, msg string) {
+	if !v {
+		_, file, line, _ := runtime.Caller(1)
+		t.Fatalf("%v:%v: %s", file, line, msg)
+	}
+}
+
+var reg *registry
+
 func runTestServer(t *testing.T, addr, url string) {
-	reg := newRegistry()
-	go reg.run()
-	http.HandleFunc(url, handleConnection(reg))
-	t.Fatal(http.ListenAndServe(addr, nil))
+	// TODO: implement restartable server
+	if reg == nil {
+		reg = newRegistry()
+		http.HandleFunc(url, handleConnection(reg))
+		go func() { failOnError(t, http.ListenAndServe(addr, nil)) }()
+	}
+	// reg := newRegistry()
+	// http.HandleFunc(url, handleConnection(reg))
+	// ln, err := net.Listen("tcp", addr)
+	// failOnError(t, err)
+	// go func() {
+	// 	fmt.Println("starting server")
+	// 	failOnError(t, http.Serve(ln, nil))
+	// 	fmt.Println("server closed")
+	// }()
+	// return ln
 }
 
 type playerInfo struct {
@@ -24,9 +61,11 @@ type playerInfo struct {
 }
 
 type message struct {
-	Index int
-	Name  string
-	Error string
+	Index  *int   `json:",omitempty"`
+	Name   string `json:",omitempty"`
+	Error  string `json:",omitempty"`
+	Play   *int   `json:",omitempty"`
+	Result *int   `json:",omitempty"`
 }
 
 type testclient struct {
@@ -52,14 +91,18 @@ func connect(addr, url string) (*testclient, error) {
 	return c, err
 }
 
-func (c *testclient) join(id, name string, timestamp uint32) {
+func (c *testclient) join(id, name string, timestamp int64) {
 	c.conn.WriteJSON(struct {
-		Timestamp uint32
+		Timestamp int64
 		ID        string
 		Name      string
 	}{
 		ID: id, Name: name, Timestamp: timestamp,
 	})
+}
+
+func (c *testclient) selectPlayer(index uint) {
+	c.conn.WriteJSON(struct{ Index uint }{Index: index})
 }
 
 // func (c *testclient) waitForJoin(timeout time.Duration) error {
@@ -73,14 +116,19 @@ func (c *testclient) join(id, name string, timestamp uint32) {
 // }
 
 func (c *testclient) read(t *testing.T, timeout time.Duration, id string) {
+	// TODO: handle disconnection
 	for {
 		var msg message
 		c.conn.SetReadDeadline(time.Now().Add(timeout))
 		err := c.conn.ReadJSON(&msg)
-		if err != nil {
+		_, closed := err.(*websocket.CloseError)
+		if closed {
+			break
+		} else if err != nil {
 			t.Errorf("failed to read message: %v", err)
 		}
-		log.Printf("%s: msg (%v)", id, msg)
+		s, _ := json.Marshal(msg)
+		log.Printf("%s: msg (%v)", id, string(s))
 		c.ch <- msg
 	}
 }
@@ -88,10 +136,12 @@ func (c *testclient) read(t *testing.T, timeout time.Duration, id string) {
 func (c *testclient) processMessage(msg message) error {
 	if len(msg.Error) > 0 {
 		return fmt.Errorf("received error: %s", msg.Error)
-	} else if len(msg.Name) > 0 {
-		c.contender = append(c.contender, playerInfo{name: msg.Name, index: msg.Index})
-	} else {
-		c.index = msg.Index
+	} else if msg.Index != nil && len(msg.Name) > 0 {
+		c.contender = append(c.contender, playerInfo{name: msg.Name, index: *msg.Index})
+	} else if msg.Index != nil && c.index < 0 {
+		c.index = *msg.Index
+	} else if msg.Index != nil {
+		// TODO: remove contender
 	}
 	return nil
 }
@@ -115,11 +165,11 @@ func (c *testclient) dispatch() error {
 // 	}
 // }
 
-func TestRendezvous(t *testing.T) {
+func NoTestRendezvous(t *testing.T) {
 	addr := ":8080"
 	url := "/pepasi"
 
-	go runTestServer(t, addr, url)
+	runTestServer(t, addr, url)
 
 	wait := time.Millisecond * 10
 retry:
@@ -221,4 +271,56 @@ retry:
 	if len(c2.contender) != 2 || (c2.contender[1] != playerInfo{index: 2, name: "player3"}) {
 		t.Errorf("exptected player3 as contender, got %v", c2.contender)
 	}
+}
+
+func connectPlayer(t *testing.T, addr, url, id, name string, timestamp int64) *testclient {
+	wait := time.Millisecond * 10
+retry:
+	c, err := connect(addr, url)
+	if err != nil && wait < time.Second*3 {
+		wait *= 2
+		log.Printf("%v, %s, retrying in %v", err, reflect.TypeOf(err), wait)
+		time.Sleep(wait)
+		goto retry
+	} else if err != nil {
+		t.Fatal(err)
+	}
+
+	go c.read(t, time.Second*1, id)
+	c.join(id, name, timestamp)
+	err = c.dispatch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestPlay(t *testing.T) {
+	addr := ":8080"
+	url := "/pepasi"
+
+	runTestServer(t, addr, url)
+
+	c1 := connectPlayer(t, addr, url, "1324", "player1", 42)
+	c2 := connectPlayer(t, addr, url, "2342", "player2", 23)
+
+	assert(t, c1.index == 0 && c2.index == 1, "expected index 0 and 1")
+
+	// player1 receives player2
+	failOnError(t, c1.dispatch())
+	expectEqual(t, len(c1.contender), 1, "exptected player2 as contender")
+
+	// player2 receive player1
+	failOnError(t, c2.dispatch())
+	expectEqual(t, len(c2.contender), 1, "exptected player1 as contender")
+
+	c1.selectPlayer(1)
+	c2.selectPlayer(0)
+
+	failOnError(t, c1.dispatch())
+	failOnError(t, c2.dispatch())
+
+	failOnError(t, c2.conn.Close())
+
+	failOnError(t, c1.dispatch())
 }
