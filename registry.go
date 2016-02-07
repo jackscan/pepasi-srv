@@ -472,7 +472,7 @@ loop:
 			cl.conn.SetWriteDeadline(time.Now().Add(cl.writeTimeout))
 			cl.conn.WriteJSON(errorResp{err.Error()})
 		case m, ok := <-cl.msgCh:
-			if ok {
+			if ok && m.err == nil {
 				cl.log.WithFields(log.Fields{
 					"symbol":    m.Symbol,
 					"timestamp": m.Timestamp,
@@ -482,7 +482,11 @@ loop:
 					timestamp: timestamp(m.Timestamp),
 				}
 			} else {
-				cl.log.Info("connection closed?")
+				if _, ok = m.err.(*websocket.CloseError); ok {
+					cl.log.Info("connection closed by client")
+				} else {
+					cl.log.Errorf("%s", m.err)
+				}
 				break loop
 			}
 		case r, ok := <-cl.resultCh:
