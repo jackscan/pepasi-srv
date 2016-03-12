@@ -74,6 +74,7 @@ type testclient struct {
 	contender []playerInfo
 	pongch    chan []byte
 	ch        chan message
+	synch     chan bool
 }
 
 func connect(addr, url string) (*testclient, error) {
@@ -85,6 +86,7 @@ func connect(addr, url string) (*testclient, error) {
 			conn:  conn,
 			index: -1,
 			ch:    make(chan message, 1),
+			synch: make(chan bool, 0),
 		}
 	}
 
@@ -125,12 +127,15 @@ func (c *testclient) read(t *testing.T, timeout time.Duration, id string) {
 		if closed {
 			break
 		} else if err != nil {
-			t.Errorf("failed to read message: %v", err)
+			t.Errorf("%s: failed to read message: %v(%T)", id, err, err)
+			break
 		}
 		s, _ := json.Marshal(msg)
 		log.Printf("%s: msg (%v)", id, string(s))
 		c.ch <- msg
 	}
+	log.Printf("%s: closed read loop\n", id)
+	c.synch <- true
 }
 
 func (c *testclient) processMessage(msg message) error {
@@ -321,6 +326,10 @@ func TestPlay(t *testing.T) {
 	failOnError(t, c2.dispatch())
 
 	failOnError(t, c2.conn.Close())
+	<-c2.synch
 
 	failOnError(t, c1.dispatch())
+
+	failOnError(t, c1.conn.Close())
+	<-c1.synch
 }
