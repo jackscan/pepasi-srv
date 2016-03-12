@@ -433,6 +433,8 @@ func (cl *client) register() error {
 }
 
 func (cl *client) seek(s *seeker) error {
+	const maxSelectionWait = time.Second * 40
+
 	go cl.readLoop()
 	go cl.writeLoop()
 
@@ -443,6 +445,9 @@ func (cl *client) seek(s *seeker) error {
 loop:
 	for werr == nil {
 		select {
+		case _ = <-time.After(maxSelectionWait):
+			werr = fmt.Errorf("exceeded timeout while waiting for selection")
+			cl.writeCh <- errorResp{"timeout"}
 		case ol, ok := <-s.candidateCh:
 			if ok {
 				for _, o := range ol {
