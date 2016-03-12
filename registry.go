@@ -363,11 +363,9 @@ func (r *registry) handleClient(c *websocket.Conn) {
 
 	err := cl.register()
 	if err == nil {
-		err = cl.play()
-	}
-
-	if err != nil {
-		cl.log.WithError(err)
+		cl.play()
+	} else {
+		cl.log.Error(err.Error())
 	}
 
 	cl.log.Info("disconnect")
@@ -496,7 +494,7 @@ func (cl *client) waitForOtherPlayer(s *seeker) error {
 	select {
 	case _ = <-time.After(maxSelectionWait):
 		err = fmt.Errorf("exceeded timeout while waiting for other player")
-		cl.writeCh <- errorResp{err.Error()}
+		cl.writeCh <- errorResp{"timeout"}
 	case ch, ok := <-s.resultCh:
 		if !ok {
 			err = fmt.Errorf("player not available")
@@ -512,9 +510,8 @@ func (cl *client) waitForOtherPlayer(s *seeker) error {
 	return err
 }
 
-func (cl *client) play() error {
+func (cl *client) play() {
 	const maxIdle = time.Minute * 3
-	var err error
 
 	defer func() {
 		cl.moveCh <- move{gesture: leaveGesture}
@@ -523,12 +520,12 @@ func (cl *client) play() error {
 	cl.log.Info("playing")
 
 loop:
-	for err == nil {
+	for {
 		select {
 		case _ = <-time.After(maxIdle):
-			err = fmt.Errorf("disconnecting idle player")
-			cl.log.Warn(err.Error())
-			cl.writeCh <- errorResp{err.Error()}
+			cl.log.Warn("disconnecting idle player")
+			cl.writeCh <- errorResp{"timeout"}
+			break loop
 		case m, ok := <-cl.msgCh:
 			if ok && m.err == nil {
 				cl.log.WithFields(log.Fields{
@@ -559,6 +556,4 @@ loop:
 			}
 		}
 	}
-
-	return err
 }
