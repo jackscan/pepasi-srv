@@ -3,6 +3,7 @@
     //
     // });
     var ws;
+    var host = this.location.host;
     var log = function(log) {
         return function(msg) {
             log.innerHTML += msg + "\n";
@@ -51,7 +52,7 @@
             clist.removeChild(clist.firstChild);
 
         log("joining");
-        ws = new WebSocket("ws://localhost:8080/pepasi")
+        ws = new WebSocket("ws://"+host+"/pepasi");
         ws.onopen = function() {
             log("connected");
             var name = document.getElementById("name").value;
