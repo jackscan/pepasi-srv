@@ -46,6 +46,13 @@ func startCompetition(a, b player, dt timestamp) {
 		var ok bool
 		defer close(a.ch)
 		defer close(b.ch)
+
+		log := log.WithFields(log.Fields{
+			"playerA": a.id,
+			"playerB": b.id,
+			"dt":      dt,
+		})
+		log.Info("competition started")
 	loop:
 		for {
 			select {
@@ -75,6 +82,6 @@ func startCompetition(a, b player, dt timestamp) {
 				mb.gesture = noGesture
 			}
 		}
-		log.Printf("competition (%s, %s) closed", a.id, b.id)
+		log.Info("competition closed")
 	}()
 }
