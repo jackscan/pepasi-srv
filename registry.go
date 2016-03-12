@@ -38,13 +38,17 @@ type seeker struct {
 }
 
 type registry struct {
-	mutex   sync.RWMutex
-	seeker  map[playerID]*seeker
-	exposed []*seeker
+	mutex     sync.RWMutex
+	seeker    map[playerID]*seeker
+	exposed   []*seeker
+	tolerance timestamp
 }
 
 func newRegistry() *registry {
-	return &registry{seeker: make(map[playerID]*seeker, 2)}
+	return &registry{
+		seeker:    make(map[playerID]*seeker, 2),
+		tolerance: 300,
+	}
 }
 
 func handleConnection(reg *registry) func(http.ResponseWriter, *http.Request) {
@@ -147,7 +151,7 @@ func (r *registry) removeSeeker(s *seeker) {
 	r.removeSeekerLocked(s)
 }
 
-func (r *registry) addSeeker(id playerID, name string) *seeker {
+func (r *registry) addSeeker(id playerID, name string, timestamp timestamp) *seeker {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
@@ -180,7 +184,10 @@ func (r *registry) addSeeker(id playerID, name string) *seeker {
 		r.exposed = append(r.exposed, nil)
 	}
 
-	rlog.WithField("index", index).Info("registered")
+	rlog.WithFields(log.Fields{
+		"index":     index,
+		"timestamp": timestamp,
+	}).Info("registered")
 
 	nc := candidate{
 		index:    uint(index),
@@ -206,6 +213,7 @@ func (r *registry) addSeeker(id playerID, name string) *seeker {
 		index:       index,
 		candidateCh: make(chan []candidate, 1),
 		resultCh:    make(chan interface{}, 1),
+		timestamp:   timestamp,
 	}
 
 	r.seeker[id] = s
@@ -242,7 +250,7 @@ func (r *registry) seekerSelect(s *seeker, id playerID) bool {
 			// other player is already waiting
 			a := player{o.id, o.resultCh}
 			b := player{s.id, s.resultCh}
-			startCompetition(a, b, s.timestamp-o.timestamp)
+			startCompetition(a, b, s.timestamp-o.timestamp, r.tolerance)
 			return true
 		}
 	}
@@ -412,7 +420,7 @@ func (cl *client) register() error {
 	cl.log.Info("registering")
 	delete(cl.log.Data, "address")
 
-	s := cl.reg.addSeeker(m.ID, m.Name)
+	s := cl.reg.addSeeker(m.ID, m.Name, timestamp(*m.Timestamp))
 	defer cl.reg.removeSeeker(s)
 
 	// TODO: find better deadline
@@ -552,7 +560,12 @@ loop:
 		case r, ok := <-cl.resultCh:
 			if ok {
 				cl.log.WithField("result", r).Info("turn end")
-				cl.writeCh <- struct{ Result int }{r.(int)}
+				switch r.(int) {
+				case -2:
+					cl.writeCh <- errorResp{"out of sync"}
+				default:
+					cl.writeCh <- struct{ Result int }{r.(int)}
+				}
 			} else {
 				// send end message
 				cl.log.Info("match end")
