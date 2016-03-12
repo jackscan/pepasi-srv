@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -48,7 +49,35 @@ func newRegistry() *registry {
 
 func handleConnection(reg *registry) func(http.ResponseWriter, *http.Request) {
 	var upgrader websocket.Upgrader
+	upgrader.CheckOrigin = func(r *http.Request) bool {
+		o := r.Header.Get("Origin")
+		if o == "" || o == "file://" {
+			return true
+		}
+
+		u, err := url.Parse(o)
+		if err != nil {
+			log.WithField("origin", o).Error(err)
+			return false
+		}
+
+		if u.Host != r.Host {
+			log.WithFields(log.Fields{
+				"origin": o,
+				"host":   r.Host,
+			}).Error("origin does not match host")
+			return false
+		}
+
+		return true
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
+		log.WithFields(log.Fields{
+			"origin": r.Header.Get("Origin"),
+			"host":   r.Host,
+		}).Info("new connection")
+
 		c, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Print(err)
