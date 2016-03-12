@@ -84,9 +84,9 @@
                 log("error: " + msg.Error);
             }
         };
-        ws.onclose = function() {
+        ws.onclose = function(e) {
             myIndex = null;
-            log("disconnected");
+            log("disconnected: " + e.code);
         };
         ws.onerror = function(e) {
             log("error: " + e);
