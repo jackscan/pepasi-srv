@@ -27,7 +27,7 @@ type errorResp struct {
 type seeker struct {
 	id    playerID
 	name  string
-	index int
+	index uint
 	selID playerID
 	timestamp
 	// channel for player to receive moveCh and results
@@ -109,16 +109,16 @@ func (s *seeker) notify(c *candidate) {
 }
 
 func (r *registry) removeExposedLocked(s *seeker) {
-	if s.index >= 0 {
+	if s.index > 0 {
 		// notify others
-		c := candidate{index: uint(s.index)}
+		c := candidate{index: s.index}
 		for _, o := range r.exposed {
 			if o != nil && s.selID != o.id {
 				o.notify(&c)
 			}
 		}
-		r.exposed[s.index] = nil
-		s.index = -1
+		r.exposed[s.index-1] = nil
+		s.index = 0
 		close(s.candidateCh)
 	}
 }
@@ -165,23 +165,23 @@ func (r *registry) addSeeker(id playerID, name string, timestamp timestamp) *see
 		r.removeSeekerLocked(os)
 	}
 
-	index := -1
+	index := uint(0)
 	// reserve for current seekers and coming
 	others := make([]candidate, 0, len(r.seeker)*2+1)
 
 	// find free index
 	for i, o := range r.exposed {
 		if o == nil {
-			index = i
+			index = uint(i + 1)
 			break
 		}
 	}
 
 	// no free index found?
-	if index < 0 {
+	if index == 0 {
 		// append
-		index = len(r.exposed)
 		r.exposed = append(r.exposed, nil)
+		index = uint(len(r.exposed))
 	}
 
 	rlog.WithFields(log.Fields{
@@ -190,7 +190,7 @@ func (r *registry) addSeeker(id playerID, name string, timestamp timestamp) *see
 	}).Info("registered")
 
 	nc := candidate{
-		index:    uint(index),
+		index:    index,
 		name:     name,
 		playerID: id,
 	}
@@ -200,7 +200,7 @@ func (r *registry) addSeeker(id playerID, name string, timestamp timestamp) *see
 		if o != nil {
 			o.notify(&nc)
 			others = append(others, candidate{
-				index:    uint(i),
+				index:    uint(i + 1),
 				name:     o.name,
 				playerID: o.id,
 			})
@@ -217,7 +217,7 @@ func (r *registry) addSeeker(id playerID, name string, timestamp timestamp) *see
 	}
 
 	r.seeker[id] = s
-	r.exposed[index] = s
+	r.exposed[index-1] = s
 
 	s.candidateCh <- others
 
@@ -426,7 +426,7 @@ func (cl *client) register() error {
 	// TODO: find better deadline
 	cl.conn.SetWriteDeadline(time.Now().Add(cl.timeout))
 
-	err = cl.conn.WriteJSON(struct{ Index int }{s.index})
+	err = cl.conn.WriteJSON(struct{ Index uint }{s.index})
 	if err != nil {
 		return err
 	}
