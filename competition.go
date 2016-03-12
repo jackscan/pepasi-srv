@@ -28,12 +28,6 @@ type move struct {
 	timestamp
 }
 
-// type competition struct {
-// 	a, b *player
-// 	dt   timestamp
-// 	ch   chan move
-// }
-
 func startCompetition(a, b player, dt timestamp, tolerance timestamp) {
 	ach := make(chan move, 1)
 	bch := make(chan move, 1)
