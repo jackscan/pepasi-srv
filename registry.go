@@ -450,10 +450,11 @@ func (cl *client) seek(s *seeker) error {
 
 	cl.log.Info("seeking")
 	others := make(map[uint]candidate)
+	timeout := time.After(maxSelectionWait)
 loop:
 	for werr == nil {
 		select {
-		case _ = <-time.After(maxSelectionWait):
+		case _ = <-timeout:
 			werr = fmt.Errorf("exceeded timeout while waiting for selection")
 			cl.writeCh <- errorResp{"Timeout"}
 		case ol, ok := <-s.candidateCh:
