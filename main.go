@@ -29,8 +29,9 @@ func main() {
 
 	addr := ":8080"
 	url := "/pepasi"
-	reg := newRegistry()
+	reg := newRegistry(300)
 	http.HandleFunc(url, handleConnection(reg))
+	http.Handle("/download/", http.StripPrefix("/download/", http.FileServer(http.Dir("download"))))
 	http.Handle("/config/", http.StripPrefix("/config/", http.FileServer(http.Dir("config-web"))))
 	http.Handle("/client/", http.StripPrefix("/client/", http.FileServer(http.Dir("web"))))
 	log.Fatal(http.ListenAndServe(addr, nil))

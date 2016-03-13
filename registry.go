@@ -44,10 +44,10 @@ type registry struct {
 	tolerance timestamp
 }
 
-func newRegistry() *registry {
+func newRegistry(tolerance timestamp) *registry {
 	return &registry{
 		seeker:    make(map[playerID]*seeker, 2),
-		tolerance: 300,
+		tolerance: tolerance,
 	}
 }
 
