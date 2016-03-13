@@ -455,7 +455,7 @@ loop:
 		select {
 		case _ = <-time.After(maxSelectionWait):
 			werr = fmt.Errorf("exceeded timeout while waiting for selection")
-			cl.writeCh <- errorResp{"timeout"}
+			cl.writeCh <- errorResp{"Timeout"}
 		case ol, ok := <-s.candidateCh:
 			if ok {
 				for _, o := range ol {
@@ -507,10 +507,10 @@ func (cl *client) waitForOtherPlayer(s *seeker) error {
 	select {
 	case _ = <-time.After(maxSelectionWait):
 		err = fmt.Errorf("exceeded timeout while waiting for other player")
-		cl.writeCh <- errorResp{"timeout"}
+		cl.writeCh <- errorResp{"Timeout"}
 	case ch, ok := <-s.resultCh:
 		if !ok {
-			err = fmt.Errorf("player not available")
+			err = fmt.Errorf("Player not available")
 			cl.writeCh <- errorResp{err.Error()}
 		} else {
 			cl.writeCh <- struct{ Play int }{1}
@@ -537,7 +537,7 @@ loop:
 		select {
 		case _ = <-time.After(maxIdle):
 			cl.log.Warn("disconnecting idle player")
-			cl.writeCh <- errorResp{"timeout"}
+			cl.writeCh <- errorResp{"Timeout"}
 			break loop
 		case m, ok := <-cl.msgCh:
 			if ok && m.err == nil {
