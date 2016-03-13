@@ -342,7 +342,7 @@ loop:
 
 func (r *registry) handleClient(c *websocket.Conn) {
 	// const writeTimeout = time.Second * 10
-	const timeout = time.Second * 3
+	const timeout = time.Second * 10
 	const pingInterval = timeout * 2 / 3
 
 	cl := client{
