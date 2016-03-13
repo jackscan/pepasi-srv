@@ -560,12 +560,10 @@ loop:
 		case r, ok := <-cl.resultCh:
 			if ok {
 				cl.log.WithField("result", r).Info("turn end")
-				switch r.(int) {
-				case -2:
-					cl.writeCh <- errorResp{"out of sync"}
-				default:
-					cl.writeCh <- struct{ Result int }{r.(int)}
+				if r.(int) == -2 {
+					cl.writeCh <- errorResp{"Out of sync!"}
 				}
+				cl.writeCh <- struct{ Result int }{r.(int)}
 			} else {
 				// send end message
 				cl.log.Info("match end")
