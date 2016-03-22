@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/boltdb/bolt"
+
 	log "github.com/sirupsen/logrus"
 
 	"github.com/gorilla/websocket"
@@ -44,10 +46,14 @@ type registry struct {
 	tolerance timestamp
 }
 
-func newRegistry(tolerance timestamp) *registry {
+type config struct {
+	tolerance timestamp
+}
+
+func newRegistry(db *bolt.DB, c config) *registry {
 	return &registry{
 		seeker:    make(map[playerID]*seeker, 2),
-		tolerance: tolerance,
+		tolerance: c.tolerance,
 	}
 }
 
